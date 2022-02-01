@@ -1,4 +1,4 @@
-package com.eneskinik.javaseyahatkitabim;
+package com.eneskinik.javaseyahatkitabim.view;
 
 import androidx.activity.result.ActivityResultCallback;
 import androidx.activity.result.ActivityResultLauncher;
@@ -7,9 +7,11 @@ import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.fragment.app.FragmentActivity;
+import androidx.room.Room;
 
 import android.Manifest;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.location.Location;
@@ -19,6 +21,10 @@ import android.os.Bundle;
 import android.view.View;
 import android.widget.Toast;
 
+import com.eneskinik.javaseyahatkitabim.R;
+import com.eneskinik.javaseyahatkitabim.model.Yer;
+import com.eneskinik.javaseyahatkitabim.roomdb.YerDao;
+import com.eneskinik.javaseyahatkitabim.roomdb.YerDatabase;
 import com.google.android.gms.maps.CameraUpdateFactory;
 import com.google.android.gms.maps.GoogleMap;
 import com.google.android.gms.maps.OnMapReadyCallback;
@@ -28,7 +34,9 @@ import com.google.android.gms.maps.model.MarkerOptions;
 import com.eneskinik.javaseyahatkitabim.databinding.ActivityMapsBinding;
 import com.google.android.material.snackbar.Snackbar;
 
-import java.sql.SQLOutput;
+import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers;
+import io.reactivex.rxjava3.disposables.CompositeDisposable;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 
 public class MapsActivity extends FragmentActivity implements OnMapReadyCallback,GoogleMap.OnMapLongClickListener {
 
@@ -39,6 +47,12 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     LocationListener locationListener;
     SharedPreferences sharedPreferences;
     boolean bilgi;
+    YerDatabase db;
+    YerDao yerDao;
+    Double secilenEnlem;
+    Double secilenBoylam;
+    private CompositeDisposable kullanAt = new CompositeDisposable();
+    Yer secilenYer;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -56,6 +70,15 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
         sharedPreferences = this.getSharedPreferences("com.eneskinik.javaseyahatkitabim",MODE_PRIVATE); //bilgi kaydediyoruz bunun içerisine. (Bir daha çalıştırıldı mı çalıştırılmadı mı)
         bilgi = false;
+
+        db = Room.databaseBuilder(getApplicationContext(),YerDatabase.class,"Yerler").build(); //database oluşturduk
+        yerDao = db.yerDao(); //MapsActivity altında yerDao methoduna ulaşabiliriz artık
+
+        secilenEnlem = 0.0;
+        secilenBoylam = 0.0;
+
+        binding.kaydetButonu.setEnabled(false); //kullanıcı bie yer seçmeden kaydet butonu etkin hale gelmez
+
     }
 
 
@@ -73,55 +96,80 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         mMap = googleMap; //ilk başta oluşturulan googleMap objesine eşitlenmiş
         mMap.setOnMapLongClickListener(this);//oluşturduğumuz "GoogleMap.OnMapLongClickListener" bu methodu güncel haritada kullanacağımızı belirttik
 
-        //alt satır yazıldığında oluşan hatayı ortadan kaldırmak için parantez içinde (LocationManager) i belirtiyoruz
-        locationManager = (LocationManager) this.getSystemService(Context.LOCATION_SERVICE); //genel konum yöneticisi, bütün işlem bunun üzerinden döner
-        //"this.getSystemService(Context.LOCATION_SERVICE);" buradan dönen objeyi 'LocationManager' olarak kaydet demek
+        Intent intent = getIntent();//MapsActivity e gelinen intenti aldık
+        String info = intent.getStringExtra("info");//intent içindeki infoyu çıkardık
 
-        //konumun değiştiğine dair uyarıları alabilmek için 'LocationListener' kullanıyoruz
-        locationListener = new LocationListener() { //konum dinleyici, LocationManager in bize verdiği mesajları alıp yapılacak olan işlemleri burada yazmamızı sağlar
-            @Override
-            public void onLocationChanged(@NonNull Location location) { //değişen konumu bize veriyor
-                //System.out.println("Lokasyon: " + location.toString()); //logcat te konumu yazdırıyor
+        if (info.equals("yeni")) { // bu info yeni ise yeni bir şey konulmak isteniyor
 
-                //SharedPreferences sharedPreferences = MapsActivity.this.getSharedPreferences("com.eneskinik.javaseyahatkitabim",MODE_PRIVATE);//bilgi kaydediyoruz bunun içerisine. (Bir daha çalıştırıldı mı çalıştırılmadı mı)
-               /** boolean **/ bilgi = sharedPreferences.getBoolean("bilgi",false);//sharedPreferences da bilgi diye bir şey var dedik, yoksa değeri false olsun dedik
+            binding.kaydetButonu.setVisibility(View.VISIBLE); //kaydet butonu gösterilsin, INVISIBLE ekrandan kaldırmıyor sadece tıklanmaz yapıyor
+            binding.silButonu.setVisibility(View.GONE); //sil butonu tamamen ekranda görünmeyecek, GONE nin INVISIBLE den farkı ekrandan kaldırıyor
 
-                if (!bilgi) {
+            //alt satır yazıldığında oluşan hatayı ortadan kaldırmak için parantez içinde (LocationManager) i belirtiyoruz
+            locationManager = (LocationManager) this.getSystemService(Context.LOCATION_SERVICE); //genel konum yöneticisi, bütün işlem bunun üzerinden döner
+            //"this.getSystemService(Context.LOCATION_SERVICE);" buradan dönen objeyi 'LocationManager' olarak kaydet demek
 
-                    LatLng kullaniciLokasyon = new LatLng(location.getLatitude(),location.getLongitude()); //enlem ve boylamı kullanıcı lokasyonuna eşitledik
-                    mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(kullaniciLokasyon,15)); //kullanıcının yaptığı her değişiklikte kamera oraya zoom yapacak
-                    sharedPreferences.edit().putBoolean("bilgi",true).apply(); //bir defa çalıştıktan sonra true olacak ve onLocationChanged ne kadar çağırılsa da önceki iki satır çalışmayacak
+            //konumun değiştiğine dair uyarıları alabilmek için 'LocationListener' kullanıyoruz
+            locationListener = new LocationListener() { //konum dinleyici, LocationManager in bize verdiği mesajları alıp yapılacak olan işlemleri burada yazmamızı sağlar
+                @Override
+                public void onLocationChanged(@NonNull Location location) { //değişen konumu bize veriyor
+                    //System.out.println("Lokasyon: " + location.toString()); //logcat te konumu yazdırıyor
+
+                    //SharedPreferences sharedPreferences = MapsActivity.this.getSharedPreferences("com.eneskinik.javaseyahatkitabim",MODE_PRIVATE);//bilgi kaydediyoruz bunun içerisine. (Bir daha çalıştırıldı mı çalıştırılmadı mı)
+                    /** boolean **/ bilgi = sharedPreferences.getBoolean("bilgi",false);//sharedPreferences da bilgi diye bir şey var dedik, yoksa değeri false olsun dedik
+
+                    if (!bilgi) {
+
+                        LatLng kullaniciLokasyon = new LatLng(location.getLatitude(),location.getLongitude()); //enlem ve boylamı kullanıcı lokasyonuna eşitledik
+                        mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(kullaniciLokasyon,15)); //kullanıcının yaptığı her değişiklikte kamera oraya zoom yapacak
+                        sharedPreferences.edit().putBoolean("bilgi",true).apply(); //bir defa çalıştıktan sonra true olacak ve onLocationChanged ne kadar çağırılsa da önceki iki satır çalışmayacak
+
+                    }
 
                 }
+            };
 
-            }
-        };
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                if (ActivityCompat.shouldShowRequestPermissionRationale(this,Manifest.permission.ACCESS_FINE_LOCATION)) { //rasyoneli göstermeyi kontrol ediyor
+                    Snackbar.make(binding.getRoot(),"Haritalar İçin İzin İsteniyor",Snackbar.LENGTH_INDEFINITE).setAction("İzin Ver", new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            //request permission (izin istememiz gerekiyor)
+                            izinBaslaticisi.launch(Manifest.permission.ACCESS_FINE_LOCATION);
+                        }
+                    }).show();
+                } else {
+                    //request permission (izin istememiz gerekiyor)
+                    izinBaslaticisi.launch(Manifest.permission.ACCESS_FINE_LOCATION);
+                }
 
-            if (ActivityCompat.shouldShowRequestPermissionRationale(this,Manifest.permission.ACCESS_FINE_LOCATION)) { //rasyoneli göstermeyi kontrol ediyor
-                Snackbar.make(binding.getRoot(),"Haritalar İçin İzin İsteniyor",Snackbar.LENGTH_INDEFINITE).setAction("İzin Ver", new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        //request permission (izin istememiz gerekiyor)
-                        izinBaslaticisi.launch(Manifest.permission.ACCESS_FINE_LOCATION);
-                    }
-                }).show();
             } else {
-                //request permission (izin istememiz gerekiyor)
-                izinBaslaticisi.launch(Manifest.permission.ACCESS_FINE_LOCATION);
+                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER,0,0,locationListener);
+
+                Location sonKonum = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+                if (sonKonum != null) { //bir konum geliyorsa kamerayı ona döndürebiliriz, konum değişirse onMapReady çağırılacak ve kamera oraya dönecek
+                    LatLng sonKullaniciKonumu = new LatLng(sonKonum.getLatitude(),sonKonum.getLongitude()); //son konum enlem boylamını sonKullaniciKonumu na eşitledik
+                    mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(sonKullaniciKonumu,15)); //kamerayı sonKullaniciKonumu na zoomladık
+                }
+
+                mMap.setMyLocationEnabled(true); // benim konumumun etkin olduğundan emin ol
+
             }
 
-        } else {
-            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER,0,0,locationListener);
+        } else { // eski bir veri gösterilmek isteniyor
 
-            Location sonKonum = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-            if (sonKonum != null) { //bir konum geliyorsa kamerayı ona döndürebiliriz, konum değişirse onMapReady çağırılacak ve kamera oraya dönecek
-                LatLng sonKullaniciKonumu = new LatLng(sonKonum.getLatitude(),sonKonum.getLongitude()); //son konum enlem boylamını sonKullaniciKonumu na eşitledik
-                mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(sonKullaniciKonumu,15)); //kamerayı sonKullaniciKonumu na zoomladık
-            }
+            mMap.clear(); //öncesinde yazılan bir şey varsa temizleniyor
 
-            mMap.setMyLocationEnabled(true); // benim konumumun etkin olduğundan emin ol
+            secilenYer = (Yer) intent.getSerializableExtra("yer"); //bize yollanan yer
+
+            LatLng latLng = new LatLng(secilenYer.enlem,secilenYer.boylam);
+
+            mMap.addMarker(new MarkerOptions().position(latLng).title(secilenYer.isim));//seçilen yeri haritada göstermek için bunu yazdık, position alabilmek için de bir üst satırda LatLng aldık
+            mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(latLng,15)); //kamerayı odakladık
+
+            binding.mekanAdiText.setText(secilenYer.isim); //mekan ismi yazan yeri seçilen yerle değiştirdik
+            binding.kaydetButonu.setVisibility(View.GONE); //kaydet butonunu işlevsellikten çıkardık
+            binding.silButonu.setVisibility(View.VISIBLE); //sil butonu görünecek
 
         }
 
@@ -164,5 +212,50 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         mMap.clear(); //harita üzerinde önceden konulmuş kırmızı işaretleri temizler
         mMap.addMarker(new MarkerOptions().title("Kullanıcının Seçimi").position(latLng));//harita üzerinde kullanıcının seçtiği yere kırmızı işaret koyar
 
+        secilenEnlem = latLng.latitude;
+        secilenBoylam = latLng.longitude;
+
+        binding.kaydetButonu.setEnabled(true);//kullanıcı kaydedeceği yeri seçtiğinde kaydet butonu aktif hale gelir
+
+    }
+
+    public void kaydet(View view){ //kaydet butonunun methodu
+
+        Yer yer = new Yer(binding.mekanAdiText.getText().toString(),secilenEnlem,secilenBoylam);
+        //yerDao.insert(yer);
+        kullanAt.add(yerDao.insert(yer) //yerDao.insert yaptık
+                .subscribeOn(Schedulers.io()) // yerDao.insert i io da yapıp
+                .observeOn(AndroidSchedulers.mainThread()) // yerDao.insert ü mainThread de gözlemleyecek
+                .subscribe(MapsActivity.this::handleResponse) //handleResponse çalıştırabilmek için parantez içindekini yazdık
+        );
+
+    }
+
+    private void handleResponse() { //gelen cevabı ele al
+
+        Intent intent = new Intent(MapsActivity.this,MapsActivity.class); //MapsActivity.this den MapsActivity.class a gidecek
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP); //gitmeden önce bütün aktiviteleri kapatacak
+        startActivity(intent);
+
+    }
+
+    public void sil(View view){ //sil butonunun methodu
+
+        if (secilenYer != null) { // seçilen yer boş değilse
+
+            kullanAt.add(yerDao.delete(secilenYer)
+                    .subscribeOn(Schedulers.io())
+                    .observeOn(AndroidSchedulers.mainThread())
+                    .subscribe(MapsActivity.this::handleResponse)
+            );
+
+        }
+
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        kullanAt.clear(); // daha önce yapılan bütün coollar burdan çöpe atılıyor, hafızada yer tutmuyor
     }
 }
